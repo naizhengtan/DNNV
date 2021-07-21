@@ -88,6 +88,8 @@ class Py2PropertyTransformer(ast.NodeTransformer):
                 new_node = ast.Call(func, new_args, [], **attributes)
 
                 return new_node
+            elif hasattr(self, "local_func_name") and func.id in self.local_func_name:
+                return node
             else:
                 value = base.__dict__.get(func.id, None)
                 if (
@@ -98,6 +100,7 @@ class Py2PropertyTransformer(ast.NodeTransformer):
                     return ast.Call(func, args, kwargs, **attributes)
                 if func.id in self._lambda_aliases:
                     return ast.Call(func, args, kwargs, **attributes)
+
         make_func = ast.Name("_symbol_from_callable", ast.Load(), **attributes)
         func_expr = ast.Call(make_func, [func], [], **attributes)
         new_node = ast.Call(func_expr, args, kwargs, **attributes)
@@ -299,6 +302,114 @@ class Py2PropertyTransformer(ast.NodeTransformer):
     def visit_Starred(self, node: ast.Starred):
         raise PropertyParserError("We do not currently support starred expressions.")
 
+class O_Py2PropertyTransformer(Py2PropertyTransformer):
+
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        attributes = {"lineno": node.lineno, "col_offset": node.col_offset}
+        if not hasattr(self, "local_func_name"):
+            self.local_func_name = set()
+        self.local_func_name.add(node.name)
+        #print("local func", repr(self.local_func_name))
+        # FIXME: check assumptions
+
+        # if symbolic func
+        is_symbolic = False
+        symbolic_dec = None
+        for dec in node.decorator_list:
+            if isinstance(dec, ast.Name) and dec.id == "symbolic":
+                symbolic_dec = dec
+                is_symbolic = True
+
+        if not is_symbolic:
+            return node
+        else:
+            # remove symbolic decorator
+            node.decorator_list.remove(symbolic_dec)
+            new_body = []
+            for stmt in node.body:
+                new_stmt = self.visit(stmt)
+                new_body.append(new_stmt)
+
+            return ast.FunctionDef(name = node.name,
+                                   args = node.args,
+                                   body = new_body,
+                                   decorator_list = node.decorator_list,
+                                   returns = node.returns,
+                                   #type_comment = node.type_comment,
+                                   **attributes)
+
+    def visit_List(self, node: ast.List):
+        attributes = {"lineno": node.lineno, "col_offset": node.col_offset}
+
+        new_node_elts = []
+        raise_exception = False
+        for expr in node.elts:
+            if not self._ensure_primitive(expr):
+                # we allow local function as well
+                if isinstance(expr, ast.Call) and \
+                   hasattr(self, "local_func_name") and \
+                   expr.func.id in self.local_func_name:
+                    # okay
+                    pass
+                else:
+                    raise_exception = True
+
+            if raise_exception:
+                raise PropertyParserError(
+                    "We do not currently support definition of lists containing non-primitive types. [%s]" % (repr(expr))
+                )
+            # visit each elts
+            new_node_elts.append(self.visit(expr))
+
+        # create new list node with element visited
+        new_node = ast.List(elts=new_node_elts,
+                            ctx=node.ctx,
+                            **attributes)
+
+        # wrap a constant call
+        const_func = ast.Name("Constant", ast.Load(), **attributes)
+        return ast.Call(const_func, [new_node], [], **attributes)
+
+    def visit_ListComp(self, node: ast.ListComp):
+        attributes = {"lineno": node.lineno, "col_offset": node.col_offset}
+        # [elt for gen.target in gen.iter]
+        # assumptions:
+        #  - gen.target is ast.Name
+        #  - gen.iter is either runnable function or some concrete iterable obj
+        elt = self.visit(node.elt)
+
+        if len(node.generators) != 1:
+            raise PropertyParserError("No support for more than one generator in ListComp.")
+        generator = node.generators[0]
+        if len(generator.ifs) > 0:
+            raise PropertyParserError("No support for generator.ifs in ListComp.")
+        if generator.is_async != 0:
+            raise PropertyParserError("No support for generator.is_async!=0 in ListComp.")
+        if not isinstance(generator.target, ast.Name):
+            raise PropertyParserError("No support for non-primitive gen.target in ListComp.")
+        # FIXME: make sure these are not symbolic vars
+        if not (
+            isinstance(generator.iter, ast.Name) or # a iterable
+            isinstance(generator.iter, ast.Call)    # function call
+        ):
+            raise PropertyParserError("No support for gen.iter (%s) in ListComp." % type(generator.iter))
+
+        g_target = self.visit(generator.target)
+        g_iter = self.visit(generator.iter)
+
+        return ast.ListComp(elt=elt, generators=[
+            ast.comprehension(target=g_target,
+                              iter=g_iter,
+                              ifs=[], is_async=0)], **attributes)
+
+
+    def visit_Subscript(self, node: ast.Subscript):
+        # FIXME:
+        # expr = self.visit(expression.expr1)[self.visit(expression.expr2)]
+        # return expr
+        #print(ast.dump(node))
+        return node
+
 
 class LimitQuantifiers(ExpressionVisitor):
     def __init__(self):
@@ -370,12 +481,11 @@ def parse_cli(phi: base.Expression, args):
             )
         parameter.concretize(parameter_value)
 
-
 def parse(path: Path, args: Optional[List[str]] = None) -> base.Expression:
     with open(path, "r") as f:
         module = ast.parse(f.read())
     for node in module.body[:-1]:
-        if not isinstance(node, (ast.Assign, ast.Import, ast.ImportFrom)) and not (
+        if not isinstance(node, (ast.Assign, ast.Import, ast.ImportFrom, ast.FunctionDef)) and not (
             isinstance(node, ast.Expr) and isinstance(node.value, ast.Str)
         ):
             raise PropertyParserError(
@@ -385,7 +495,15 @@ def parse(path: Path, args: Optional[List[str]] = None) -> base.Expression:
     if not isinstance(property_node, ast.Expr):
         raise PropertyParserError()
 
-    module = Py2PropertyTransformer().visit(module)
+    # cheng-hack: see origin below
+    #module = Py2PropertyTransformer().visit(module)
+
+    my_transformer = O_Py2PropertyTransformer()
+    for i in range(len(module.body)):
+        # convert (1) the spec in the end, (2) function with "symbolic" decorator
+        if (i == len(module.body) - 1) \
+                or isinstance(module.body[i], ast.FunctionDef):
+            module.body[i] = my_transformer.visit(module.body[i])
 
     attributes = {
         "lineno": property_node.lineno,

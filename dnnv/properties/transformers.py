@@ -126,7 +126,7 @@ class Canonical(ExpressionTransformer):
         expr1 = expression.expr1
         expr2 = expression.expr2
         return self.visit(Or(expr1 > expr2, expr2 > expr1))
-    
+
     def visit_GreaterThan(self, expression: GreaterThan) -> GreaterThan:
         lhs = self.visit(expression.expr1 - expression.expr2)
         if not isinstance(lhs, Add):
@@ -417,16 +417,32 @@ class PropagateConstants(ExpressionTransformer):
         return Add(Constant(constant_value), *expressions)
 
     def visit_And(self, expression: And):
+
+        def _update(expr, constant_expressions, expressions):
+            if isinstance(expr, Constant):
+                constant_expressions.add(expr)
+            elif (~expr) in expressions:
+                return True # if conflict
+            else:
+                expressions.add(expr)
+            return False
+
         expressions: Set[Expression] = set()
         constant_expressions = set()
         for expr in expression.expressions:
             expr = self.visit(expr)
-            if isinstance(expr, Constant):
-                constant_expressions.add(expr)
-            elif (~expr) in expressions:
-                return Constant(False)
+            # cheng-hack: check if it is a list
+            if isinstance(expr, Constant) and isinstance(expr.value, list):
+                for expr_item in expr.value:
+                    expr_item = self.visit(expr_item)
+                    conflict = _update(expr_item, constant_expressions, expressions)
+                    if conflict:
+                        return Constant(False)
             else:
-                expressions.add(expr)
+                conflict = _update(expr, constant_expressions, expressions)
+                if conflict:
+                    return Constant(False)
+
         if len(constant_expressions) == 0 and len(expressions) == 0:
             return Constant(True)
         constant_value = True

@@ -18,6 +18,9 @@ class Py2PropertyTransformer(ast.NodeTransformer):
     def __init__(self):
         self._ssa_ids = defaultdict(int)
         self._lambda_aliases = set()
+        self.visiting_symbol_name = None
+        self.symbolic_funcs = set()
+        self.visited_symbolic_funcs = set()
 
     def _ssa(self, name):
         ssa_id = self._ssa_ids[name]
@@ -37,6 +40,7 @@ class Py2PropertyTransformer(ast.NodeTransformer):
     def visit_Call(self, node: ast.Call):
         attributes = {"lineno": node.lineno, "col_offset": node.col_offset}
         func = self.visit(node.func)
+        # print(f'visiting call {func.id}, symbol name: {self.visiting_symbol_name}')
         args = [self.visit(arg) for arg in node.args]
         kwargs = [self.visit(keyword) for keyword in node.keywords]
 
@@ -51,6 +55,8 @@ class Py2PropertyTransformer(ast.NodeTransformer):
                         "The first argument to %s must be a variable name." % func.id
                     )
                 symbol_name = args[0]
+                self.visiting_symbol_name = symbol_name.id
+                args = [self.visit(arg) for arg in node.args]
                 sym_func = ast.Name("Symbol", ast.Load(), **attributes)
                 sym_func_args = [
                     ast.Str(self._ssa(symbol_name.id), **attributes)
@@ -87,8 +93,11 @@ class Py2PropertyTransformer(ast.NodeTransformer):
                 new_args = [variable, lambda_func]
                 new_node = ast.Call(func, new_args, [], **attributes)
 
+                self.visiting_symbol_name = None
                 return new_node
             elif hasattr(self, "local_func_name") and func.id in self.local_func_name:
+                if self.visiting_symbol_name is not None and len(args) > 0 and isinstance(args[0], ast.Name) and args[0].id == self.visiting_symbol_name:
+                    self.symbolic_funcs.add(func.id)
                 return node
             else:
                 value = base.__dict__.get(func.id, None)
@@ -312,23 +321,22 @@ class O_Py2PropertyTransformer(Py2PropertyTransformer):
         #print("local func", repr(self.local_func_name))
         # FIXME: check assumptions
 
-        # if symbolic func
-        is_symbolic = False
-        symbolic_dec = None
-        for dec in node.decorator_list:
-            if isinstance(dec, ast.Name) and dec.id == "symbolic":
-                symbolic_dec = dec
-                is_symbolic = True
-
-        if not is_symbolic:
+        if node.name not in self.symbolic_funcs:
             return node
         else:
-            # remove symbolic decorator
-            node.decorator_list.remove(symbolic_dec)
+            # symbolic func
+            # remove it from revisit list
+            self.symbolic_funcs.remove(node.name)
+            # mark it as visited to prevent loop (foo->bar->foo->bar->...)
+            self.visited_symbolic_funcs.add(node.name)
+
+            symbol_name = self.visit(node.args.args[0])
+            self.visiting_symbol_name = symbol_name.arg
             new_body = []
             for stmt in node.body:
                 new_stmt = self.visit(stmt)
                 new_body.append(new_stmt)
+            self.visiting_symbol_name = None
 
             return ast.FunctionDef(name = node.name,
                                    args = node.args,
@@ -409,6 +417,15 @@ class O_Py2PropertyTransformer(Py2PropertyTransformer):
         # return expr
         #print(ast.dump(node))
         return node
+
+    def revisit(self, body: List[ast.stmt]):
+        # revisit the FunctionDefs that contain symbols
+        # keep revisiting until there is no new symbolic functions found
+        while len(self.symbolic_funcs) != 0:
+            # print(f'----- ----- ----- revisit {self.symbolic_funcs} ----- ----- -----')
+            for i in range(len(body)):
+                if isinstance(body[i], ast.FunctionDef) and body[i].name in self.symbolic_funcs:
+                    body[i] = self.visit(body[i])
 
 
 class LimitQuantifiers(ExpressionVisitor):
@@ -504,6 +521,8 @@ def parse(path: Path, args: Optional[List[str]] = None) -> base.Expression:
         if (i == len(module.body) - 1) \
                 or isinstance(module.body[i], ast.FunctionDef):
             module.body[i] = my_transformer.visit(module.body[i])
+
+    my_transformer.revisit(module.body)
 
     attributes = {
         "lineno": property_node.lineno,

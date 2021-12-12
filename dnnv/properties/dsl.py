@@ -8,7 +8,9 @@ from typing import List, Optional
 from . import base
 from .context import Context
 from .visitors import ExpressionVisitor
+import pprint
 
+probability = 100
 
 class PropertyParserError(Exception):
     pass
@@ -49,7 +51,13 @@ class Py2PropertyTransformer(ast.NodeTransformer):
                 if len(args) != 2:
                     raise ValueError("%s takes 2 arguments." % func.id)
                 if len(kwargs) != 0:
-                    raise ValueError("%s does not take keyword arguments." % func.id)
+                    # FIXME: hard-coded to fetch prob
+                    if len(kwargs) == 1 and kwargs[0].arg == "prob":
+                        global probability
+                        probability = kwargs[0].value.args[0].value
+                        #print(type(prob))
+                    else:
+                        raise ValueError("%s does not take keyword arguments other than \"prob\"." % func.id)
                 if not isinstance(args[0], ast.Name):
                     raise PropertyParserError(
                         "The first argument to %s must be a variable name." % func.id
@@ -544,5 +552,6 @@ def parse(path: Path, args: Optional[List[str]] = None) -> base.Expression:
 
         phi = phi.propagate_constants()
         parse_cli(phi, args)
+        phi.prob = probability
 
     return phi

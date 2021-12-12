@@ -192,6 +192,12 @@ class Expression:
     def __invert__(self) -> "Not":
         return Not(self)
 
+    def __monoinc__(self, other) -> "MonoInc":
+        return MonoInc(self)
+
+    def __monodec__(self, other) -> "MonoDec":
+        return MonoDec(self)
+
     def __call__(
         self, *args: "Expression", **kwargs: "Expression"
     ) -> Union["Constant", "FunctionCall"]:
@@ -926,6 +932,28 @@ class Exists(Quantifier):
         return Forall(self.variable, lambda _: ~self.expression)
 
 
+class RelExpression(Expression):
+    def __invert__(self):
+        return Not(self)
+
+    def __call__(self, *args: "Expression", **kwargs: "Expression"):
+        raise ValueError("Relative expressions are not callable.")
+
+class MonoInc(BinaryExpression, RelExpression):
+    OPERATOR = "MonoInc"
+
+    def __invert__(self):
+        return MonoDec(self.expr1, self.expr2)
+
+class MonoDec(BinaryExpression, RelExpression):
+    OPERATOR = "MonoDec"
+
+    def __invert__(self):
+        return MonoInc(self.expr1, self.expr2)
+
+
+
+
 argmax = np.argmax
 argmin = np.argmin
 
@@ -1059,6 +1087,8 @@ __all__ = [
     "Implies",
     "Quantifier",
     "Forall",
+    "MonoInc",
+    "MonoDec",
     "Exists",
     "AssociativeExpression",
     "TernaryExpression",

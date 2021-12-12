@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
 from .base import *
+from .base import RelExpression, MonoInc, MonoDec
 from .base import _BUILTIN_FUNCTIONS, _BUILTIN_FUNCTION_TRANSFORMS
 from .visitors import ExpressionVisitor
 
@@ -258,6 +259,17 @@ class Canonical(ExpressionTransformer):
 
     def visit_Symbol(self, expression: Symbol) -> Symbol:
         return expression
+
+    def visit_MonoInc(self, expression: MonoInc):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoInc(antecedent, consequent)
+
+    def visit_MonoDec(self, expression: MonoDec):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoDec(antecedent, consequent)
+
 
 
 class SubstituteFunctionCalls(GenericExpressionTransformer):
@@ -719,6 +731,16 @@ class PropagateConstants(ExpressionTransformer):
             return Constant(expression.value)
         return expression
 
+    def visit_MonoInc(self, expression: MonoInc):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoInc(antecedent, consequent)
+
+    def visit_MonoDec(self, expression: MonoDec):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoDec(antecedent, consequent)
+
 
 class ToCNF(GenericExpressionTransformer):
     def visit(self, expression: Expression) -> Expression:
@@ -785,3 +807,13 @@ class ToCNF(GenericExpressionTransformer):
                     new_clauses.add(tuple(set(clause + (expr,))))
                 clauses = new_clauses
         return And(*[Or(*clause) for clause in clauses])
+
+    def visit_MonoInc(self, expression: MonoInc):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoInc(antecedent, consequent)
+
+    def visit_MonoDec(self, expression: MonoDec):
+        antecedent = self.visit(expression.expr1)
+        consequent = self.visit(expression.expr2)
+        return MonoDec(antecedent, consequent)

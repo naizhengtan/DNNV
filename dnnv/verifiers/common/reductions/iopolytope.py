@@ -23,6 +23,8 @@ from dnnv.properties.base import (
     Or,
     Subscript,
     Symbol,
+    MonoInc,
+    MonoDec,
 )
 
 from .base import Property, Reduction
@@ -338,6 +340,33 @@ class HyperRectangle(HalfspacePolytope):
             strs.append(f"{lb:f} <= {variable}[{index}] <= {ub:f}")
         return "\n".join(strs)
 
+# cheng-hack
+class MonoProperty(Property):
+    def __init__(
+        self,
+        networks: List[Network],
+        input_dim: Expression,
+        output_dim: Expression,
+        inc: bool,
+    ):
+        self.networks = networks
+        self.mono_inc = inc
+        self.input_dim = input_dim
+        setattr(self.input_dim, "_varname", "x")
+        self.output_dim = output_dim
+        setattr(
+            self.output_dim,
+            "_varname",
+            [f"{network}(x)" for network in self.networks],
+        )
+
+    def __str__(self):
+        strs = ["Mono Property:"]
+        strs += ["  Networks:"] + ["    " + str(self.networks)]
+        strs += ["  Mono Inc:"] + ["    " + str(self.mono_inc)]
+        strs += ["  Input dimension:"] + ["    " + str(self.input_dim)]
+        strs += ["  Output dimension:"] + ["    " + str(self.output_dim)]
+        return "\n".join(strs)
 
 class IOPolytopeProperty(Property):
     def __init__(
@@ -558,8 +587,18 @@ class IOPolytopeReduction(Reduction):
         self.logger.debug("DNF: %s", dnf_expression)
 
         for conjunction in dnf_expression:
-            self.logger.info("CONJUNCTION: %s", conjunction)
-            yield from self._reduce(conjunction)
+            def build_mono_prop(networks, conjunction, mono_inc):
+                return MonoProperty(self.networks, conjunction.expr1,
+                                    conjunction.expr2, mono_inc)
+
+            # hack: probably should not use polytope
+            if isinstance(conjunction, MonoInc) or isinstance(conjunction, MonoDec):
+                assert len(dnf_expression.expressions) == 1
+                mono_inc = True if isinstance(conjunction, MonoInc) else False
+                yield build_mono_prop(self.networks, conjunction, mono_inc)
+            else:
+                self.logger.info("CONJUNCTION: %s", conjunction)
+                yield from self._reduce(conjunction)
 
     def visit(self, expression):
         self._stack.append(type(expression))

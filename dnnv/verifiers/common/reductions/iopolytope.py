@@ -593,7 +593,6 @@ class IOPolytopeReduction(Reduction):
 
             # hack: probably should not use polytope
             if isinstance(conjunction, MonoInc) or isinstance(conjunction, MonoDec):
-                assert len(dnf_expression.expressions) == 1
                 mono_inc = True if isinstance(conjunction, MonoInc) else False
                 yield build_mono_prop(self.networks, conjunction, mono_inc)
             else:
